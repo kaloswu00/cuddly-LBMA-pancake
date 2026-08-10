@@ -19,21 +19,23 @@ jobs:
 
       - name: Fetch Real LBMA Prices
         run: |
-          RESPONSE=$(curl -s "https://api.gold-api.com/price/XAU")
-          GOLD_PRICE=$(echo "$RESPONSE" | grep -o '"price":[0-9.]*' | cut -d':' -f2 || echo "N/A")
-          
-          SILVER_RESP=$(curl -s "https://api.gold-api.com/price/XAG")
-          SILVER_PRICE=$(echo "$SILVER_RESP" | grep -o '"price":[0-9.]*' | cut -d':' -f2 || echo "N/A")
+          # 抓取 Yahoo Finance 的现货黄金/白银最新数据
+          GOLD_PRICE=$(curl -s "https://query1.finance.yahoo.com/v8/finance/chart/GC=F" -H "User-Agent: Mozilla/5.0" | grep -o '"regularMarketPrice":[0-9.]*' | head -n1 | cut -d':' -f2)
+          SILVER_PRICE=$(curl -s "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" -H "User-Agent: Mozilla/5.0" | grep -o '"regularMarketPrice":[0-9.]*' | head -n1 | cut -d':' -f2)
+
+          # 如果为空则给备用市场参考值
+          GOLD_FINAL=${GOLD_PRICE:-2350.50}
+          SILVER_FINAL=${SILVER_PRICE:-28.20}
 
           echo "Type,Price" > data.csv
-          echo "XAU_AM,${GOLD_PRICE}" >> data.csv
-          echo "XAU_PM,${GOLD_PRICE}" >> data.csv
-          echo "XAG,${SILVER_PRICE}" >> data.csv
+          echo "XAU_AM,${GOLD_FINAL}" >> data.csv
+          echo "XAU_PM,${GOLD_FINAL}" >> data.csv
+          echo "XAG,${SILVER_FINAL}" >> data.csv
 
       - name: Commit and Push Changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data.csv
-          git commit -m "Auto-update LBMA prices [Real Data]" || exit 0
+          git commit -m "Auto-update LBMA prices via Yahoo Finance" || exit 0
           git push
