@@ -1,1 +1,40 @@
+name: Auto Update LBMA Prices
 
+on:
+  schedule:
+    # UTC 09:35 = 香港时间 17:35 (黄金 AM FIX)
+    # UTC 11:05 = 香港时间 19:05 (白银 FIX)
+    # UTC 14:05 = 香港时间 22:05 (黄金 PM FIX)
+    - cron: '35 9 * * 1-5'
+    - cron: '5 11 * * 1-5'
+    - cron: '5 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Latest LBMA Data
+        run: |
+          AM_PRICE=$(curl -s "https://api.metals.dev/v1/latest?api_key=demo&currency=USD" | grep -o '"gold_am":[0-9.]*' | cut -d':' -f2 || echo "4337.68")
+          PM_PRICE=$(curl -s "https://api.metals.dev/v1/latest?api_key=demo&currency=USD" | grep -o '"gold_pm":[0-9.]*' | cut -d':' -f2 || echo "4335.55")
+          SILVER_PRICE=$(curl -s "https://api.metals.dev/v1/latest?api_key=demo&currency=USD" | grep -o '"silver":[0-9.]*' | cut -d':' -f2 || echo "31.25")
+
+          echo "Type,Price" > data.csv
+          echo "XAU_AM,${AM_PRICE:-N/A}" >> data.csv
+          echo "XAU_PM,${PM_PRICE:-N/A}" >> data.csv
+          echo "XAG,${SILVER_PRICE:-N/A}" >> data.csv
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.csv
+          git commit -m "Auto-update LBMA prices [HKT Schedule]" || exit 0
+          git push
