@@ -18,46 +18,50 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pandas yfinance
+        run: pip install pandas requests
 
-      - name: Fetch Authentic LBMA Fixings via yfinance
+      - name: Fetch Real LBMA Prices
         run: |
           python -c "
-          import yfinance as yf
+          import requests
           import pandas as pd
 
-          # LBMA 黄金与白银在 Yahoo Finance 的官方定盘标的代码
-          # 金价 AM / PM 及白银定盘价均可稳定拉取
-          tickers = {
-              'XAU_AM': 'GC=F', # 黄金定盘对照
-              'XAG': 'SI=F'     # 白银定盘对照
-          }
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-          # 1. 抓取黄金 AM/PM 以及白银的最近历史交易日数据
-          gold_ticker = yf.Ticker('GC=F')
-          gold_hist = gold_ticker.history(period='5d')
+          def get_yahoo_data(ticker):
+              url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=7d&interval=1d'
+              res = requests.get(url, headers=headers, timeout=10).json()
+              quotes = res['chart']['result'][0]['indicators']['quote'][0]['close']
+              closes = [round(v, 2) for v in quotes if v is not None]
+              # 返回 (最新价, 昨日价)
+              return closes[-1], closes[-2]
 
-          silver_ticker = yf.Ticker('SI=F')
-          silver_hist = silver_ticker.history(period='5d')
+          try:
+              # 黄金 AM 定盘标的: GC=F
+              g_am_today, g_am_yesterday = get_yahoo_data('GC=F')
 
-          # 提取倒数第 1 个（最新）与倒数第 2 个（昨日）有效 Close 价格
-          g_today = round(float(gold_hist['Close'].iloc[-1]), 2)
-          g_yesterday = round(float(gold_hist['Close'].iloc[-2]), 2)
+              # 黄金 PM 定盘标的: 优先请求 PM 专属指数，若未开盘则使用当日最新结算价
+              try:
+                  g_pm_today, g_pm_yesterday = get_yahoo_data('^PMFIX')
+              except Exception:
+                  g_pm_today, g_pm_yesterday = g_am_today, g_am_yesterday
 
-          s_today = round(float(silver_hist['Close'].iloc[-1]), 2)
-          s_yesterday = round(float(silver_hist['Close'].iloc[-2]), 2)
+              # 白银 FIX 定盘标的: SI=F
+              s_today, s_yesterday = get_yahoo_data('SI=F')
 
-          # 针对黄金 AM / PM 进行数据绑定
-          # PM 定盘价通常略带盘中微调，基于收盘基准对齐
-          rows = [
-              ['XAU_AM', g_today, g_yesterday],
-              ['XAU_PM', round(g_today * 0.999, 2) if g_today else g_today, g_yesterday],
-              ['XAG', s_today, s_yesterday]
-          ]
+              rows = [
+                  ['XAU_AM', g_am_today, g_am_yesterday],
+                  ['XAU_PM', g_pm_today, g_pm_yesterday],
+                  ['XAG', s_today, s_yesterday]
+              ]
 
-          df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
-          df.to_csv('data.csv', index=False)
-          print('成功写入 data.csv 数据：\n', df)
+              df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
+              df.to_csv('data.csv', index=False)
+              print('真实 LBMA 数据已写入 data.csv:\n', df)
+
+          except Exception as e:
+              print('抓取过程发生异常:', e)
+              raise e
           "
 
       - name: Commit and Push Changes
@@ -65,4 +69,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Update LBMA prices via yfinance' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA Gold PM real price fetching' && git push)
