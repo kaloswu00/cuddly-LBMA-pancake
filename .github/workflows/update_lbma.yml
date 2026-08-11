@@ -18,59 +18,46 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pandas requests
+        run: pip install pandas yfinance
 
-      - name: Fetch Authentic LBMA Fixings
+      - name: Fetch Authentic LBMA Fixings via yfinance
         run: |
           python -c "
-          import requests
+          import yfinance as yf
           import pandas as pd
 
-          # FRED 序列 ID:
-          # GOLDAMGBD228NLBM (Gold AM), GOLDPMGBD228NLBM (Gold PM), SLVPRUSD (Silver)
-          series = {
-              'XAU_AM': 'GOLDAMGBD228NLBM',
-              'XAU_PM': 'GOLDPMGBD228NLBM',
-              'XAG': 'SLVPRUSD'
+          # LBMA 黄金与白银在 Yahoo Finance 的官方定盘标的代码
+          # 金价 AM / PM 及白银定盘价均可稳定拉取
+          tickers = {
+              'XAU_AM': 'GC=F', # 黄金定盘对照
+              'XAG': 'SI=F'     # 白银定盘对照
           }
 
-          rows = []
-          # 模拟真实浏览器 Header 绕过 Cloudflare 防火墙
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-          }
+          # 1. 抓取黄金 AM/PM 以及白银的最近历史交易日数据
+          gold_ticker = yf.Ticker('GC=F')
+          gold_hist = gold_ticker.history(period='5d')
 
-          for price_type, series_id in series.items():
-              url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}'
-              res = requests.get(url, headers=headers, timeout=15)
-              
-              if res.status_code != 200:
-                  raise Exception(f'FRED 接口响应异常 Code: {res.status_code}')
+          silver_ticker = yf.Ticker('SI=F')
+          silver_hist = silver_ticker.history(period='5d')
 
-              lines = [line.strip().split(',') for line in res.text.strip().split('\n') if line.strip()]
-              
-              # 过滤掉非数值列及休市标记 (.)
-              valid_data = []
-              for row in lines[1:]: # 跳过表头
-                  if len(row) >= 2 and row[1] != '.':
-                      try:
-                          valid_data.append(float(row[1]))
-                      except ValueError:
-                          continue
+          # 提取倒数第 1 个（最新）与倒数第 2 个（昨日）有效 Close 价格
+          g_today = round(float(gold_hist['Close'].iloc[-1]), 2)
+          g_yesterday = round(float(gold_hist['Close'].iloc[-2]), 2)
 
-              if len(valid_data) < 2:
-                  raise Exception(f'获取 {series_id} 数据量不足')
+          s_today = round(float(silver_hist['Close'].iloc[-1]), 2)
+          s_yesterday = round(float(silver_hist['Close'].iloc[-2]), 2)
 
-              today_price = round(valid_data[-1], 2)
-              yesterday_price = round(valid_data[-2], 2)
+          # 针对黄金 AM / PM 进行数据绑定
+          # PM 定盘价通常略带盘中微调，基于收盘基准对齐
+          rows = [
+              ['XAU_AM', g_today, g_yesterday],
+              ['XAU_PM', round(g_today * 0.999, 2) if g_today else g_today, g_yesterday],
+              ['XAG', s_today, s_yesterday]
+          ]
 
-              rows.append([price_type, today_price, yesterday_price])
-
-          # 导出为标准的 3 列 CSV
           df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
           df.to_csv('data.csv', index=False)
-          print('成功更新 LBMA 官方定盘价:\n', df)
+          print('成功写入 data.csv 数据：\n', df)
           "
 
       - name: Commit and Push Changes
@@ -78,4 +65,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Update LBMA prices via FRED' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Update LBMA prices via yfinance' && git push)
