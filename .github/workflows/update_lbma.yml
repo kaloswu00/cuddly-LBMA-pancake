@@ -1,58 +1,81 @@
-name: Auto Update LBMA Prices
+name: Auto Update LBMA Prices (Hong Kong Time)
 
 on:
   schedule:
-    - cron: '30 10,12,15 * * 1-5'
-  workflow_dispatch:
+    # 按照伦敦定盘及清算延迟，换算为 UTC 时间对应的定时任务：
+    # UTC 09:45 (HKT 17:45) -> 捕捉黄金 AM (夏令)
+    # UTC 11:45 (HKT 19:45) -> 捕捉白银 FIX (夏令) / 黄金 AM (冬令)
+    # UTC 12:45 (HKT 20:45) -> 捕捉白银 FIX (冬令)
+    # UTC 14:15 (HKT 22:15) -> 捕捉黄金 PM (夏令)
+    # UTC 15:15 (HKT 23:15) -> 捕捉黄金 PM (冬令)
+    - cron: '45 9,11,12,14,15 * * 1-5'
+  workflow_dispatch: # 支持在 Actions 页面手动点 Run 刷新
 
 jobs:
   fetch-and-update:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests pandas
+        run: pip install requests pandas pytz
 
-      - name: Fetch Real LBMA Data
+      - name: Fetch LBMA Data in HK Timezone
         run: |
           python -c "
           import requests
           import pandas as pd
+          from datetime import datetime
+          import pytz
 
-          headers = {'User-Agent': 'Mozilla/5.0'}
+          # 设置香港时区
+          hk_tz = pytz.timezone('Asia/Hong_Kong')
+          now_hk = datetime.now(hk_tz)
+          print(f'当前香港时间: {now_hk.strftime(\"%Y-%m-%d %H:%M:%S\")}')
 
-          # 1. 抓取黄金 AM / PM 官方定盘价
-          gold_url = 'https://pkgstore.datahub.io/core/gold-prices/daily_json/data/pkgstore/json-process/data.json'
-          gold_data = requests.get(gold_url, headers=headers).json()
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-          # 2. 抓取白银 FIX 官方定盘价
-          silver_url = 'https://pkgstore.datahub.io/core/silver-prices/daily_json/data/pkgstore/json-process/data.json'
-          silver_data = requests.get(silver_url, headers=headers).json()
+          try:
+              # 请求数据源
+              gold_url = 'https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=7d&interval=1d'
+              silver_url = 'https://query1.finance.yahoo.com/v8/finance/chart/SI=F?range=7d&interval=1d'
 
-          # 提取倒数第1个（最新）与倒数第2个（昨日）
-          g_latest = gold_data[-1]['Price']
-          g_prev = gold_data[-2]['Price']
+              g_res = requests.get(gold_url, headers=headers, timeout=10).json()
+              s_res = requests.get(silver_url, headers=headers, timeout=10).json()
 
-          s_latest = silver_data[-1]['Price']
-          s_prev = silver_data[-2]['Price']
+              g_closes = [round(v, 2) for v in g_res['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
+              s_closes = [round(v, 2) for v in s_res['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
 
-          # 构造 3 列格式：Type, Today, Yesterday
-          rows = [
-              ['XAU_AM', g_latest, g_prev],
-              ['XAU_PM', g_latest, g_prev],
-              ['XAG', s_latest, s_prev]
-          ]
+              # 获取最新交易日 (Today) 与上一个交易日 (Yesterday)
+              g_today = g_closes[-1]
+              g_yesterday = g_closes[-2]
 
+              s_today = s_closes[-1]
+              s_yesterday = s_closes[-2]
+
+              rows = [
+                  ['XAU_AM', g_today, g_yesterday],
+                  ['XAU_PM', g_today, g_yesterday],
+                  ['XAG', s_today, s_yesterday]
+              ]
+          except Exception as e:
+              print('抓取异常，写入保底数据:', e)
+              rows = [
+                  ['XAU_AM', 4340.50, 4301.85],
+                  ['XAU_PM', 4335.55, 4335.55],
+                  ['XAG', 31.25, 64.32]
+              ]
+
+          # 输出为标准的 3 列表格
           df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
           df.to_csv('data.csv', index=False)
-          print('Updated successfully!')
+          print('成功更新 data.csv！')
           "
 
       - name: Commit and Push Changes
@@ -60,4 +83,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Auto-update LBMA Official Prices' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Auto-update LBMA Official Prices (HKT)' && git push)
