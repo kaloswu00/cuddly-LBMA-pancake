@@ -2,9 +2,8 @@ name: Auto Update LBMA Prices
 
 on:
   schedule:
-    # 每天在 LBMA 伦敦三次定盘发布后自动运行 (UTC 时间 10:30, 12:30, 15:30)
     - cron: '30 10,12,15 * * 1-5'
-  workflow_dispatch: # 允许手动在 Actions 页面点按钮立刻刷新
+  workflow_dispatch:
 
 jobs:
   fetch-and-update:
@@ -21,53 +20,39 @@ jobs:
       - name: Install dependencies
         run: pip install requests pandas
 
-      - name: Fetch Real-time LBMA Data
+      - name: Fetch Real LBMA Data
         run: |
           python -c "
           import requests
           import pandas as pd
 
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+          headers = {'User-Agent': 'Mozilla/5.0'}
 
-          try:
-              # 1. 抓取黄金 AM / PM 官方真实历史序列 (Datahub 镜像接口)
-              gold_res = requests.get('https://pkgstore.datahub.io/core/gold-prices/daily_json/data/pkgstore/json-process/data.json', headers=headers, timeout=10).json()
-              # 2. 抓取白银 FIX 官方真实历史序列
-              silver_res = requests.get('https://pkgstore.datahub.io/core/silver-prices/daily_json/data/pkgstore/json-process/data.json', headers=headers, timeout=10).json()
+          # 1. 抓取黄金 AM / PM 官方定盘价
+          gold_url = 'https://pkgstore.datahub.io/core/gold-prices/daily_json/data/pkgstore/json-process/data.json'
+          gold_data = requests.get(gold_url, headers=headers).json()
 
-              # 提取最新价（倒数第一个）和昨日价（倒数第二个）
-              gold_latest = gold_res[-1]['Price']
-              gold_yesterday = gold_res[-2]['Price']
+          # 2. 抓取白银 FIX 官方定盘价
+          silver_url = 'https://pkgstore.datahub.io/core/silver-prices/daily_json/data/pkgstore/json-process/data.json'
+          silver_data = requests.get(silver_url, headers=headers).json()
 
-              silver_latest = silver_res[-1]['Price']
-              silver_yesterday = silver_res[-2]['Price']
+          # 提取倒数第1个（最新）与倒数第2个（昨日）
+          g_latest = gold_data[-1]['Price']
+          g_prev = gold_data[-2]['Price']
 
-              # 组装数据表格
-              data = [
-                  ['XAU_AM', gold_latest, gold_yesterday],
-                  ['XAU_PM', gold_latest, gold_yesterday],
-                  ['XAG', silver_latest, silver_yesterday]
-              ]
+          s_latest = silver_data[-1]['Price']
+          s_prev = silver_data[-2]['Price']
 
-          except Exception as e:
-              print('使用备用 LBMA 源 API 抓取:', e)
-              # 备用 API 数据源
-              gold_api = requests.get('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=5d&interval=1d', headers=headers).json()
-              silver_api = requests.get('https://query1.finance.yahoo.com/v8/finance/chart/SI=F?range=5d&interval=1d', headers=headers).json()
+          # 构造 3 列格式：Type, Today, Yesterday
+          rows = [
+              ['XAU_AM', g_latest, g_prev],
+              ['XAU_PM', g_latest, g_prev],
+              ['XAG', s_latest, s_prev]
+          ]
 
-              g_closes = [v for v in gold_api['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
-              s_closes = [v for v in silver_api['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
-
-              data = [
-                  ['XAU_AM', round(g_closes[-1], 2), round(g_closes[-2], 2)],
-                  ['XAU_PM', round(g_closes[-1], 2), round(g_closes[-2], 2)],
-                  ['XAG', round(s_closes[-1], 2), round(s_closes[-2], 2)]
-              ]
-
-          # 保存覆盖 data.csv
-          df = pd.DataFrame(data, columns=['Type', 'Today', 'Yesterday'])
+          df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
           df.to_csv('data.csv', index=False)
-          print('Successfully updated data.csv!')
+          print('Updated successfully!')
           "
 
       - name: Commit and Push Changes
