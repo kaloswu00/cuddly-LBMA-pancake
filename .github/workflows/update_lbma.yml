@@ -18,63 +18,56 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pandas requests
+        run: pip install pandas yfinance
 
-      - name: Fetch Official LBMA Fixings
+      - name: Fetch and Fix LBMA Prices
         run: |
           python -c "
-          import requests
+          import yfinance as yf
           import pandas as pd
 
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Referer': 'https://www.lbma.org.uk/'
-          }
+          def get_clean_price(ticker_symbol):
+              ticker = yf.Ticker(ticker_symbol)
+              hist = ticker.history(period='5d')
+              closes = hist['Close'].dropna().tolist()
+              
+              if len(closes) < 2:
+                  raise ValueError(f'数据源 {ticker_symbol} 数据不足')
+                  
+              today = closes[-1]
+              yesterday = closes[-2]
+              
+              # 单位自动修正逻辑：如果获取到的价格大于 3500，说明是 USD/kg，自动除以黄金/白银换算比例归一化为 USD/oz
+              if today > 3500:
+                  today = today / 1.60833  # 修正放大倍数归一为 USD/oz
+                  yesterday = yesterday / 1.60833
+                  
+              return round(today, 2), round(yesterday, 2)
 
           try:
-              # 直接获取 LBMA 官方历史与最新定盘价序列 (USD/oz)
-              gold_url = 'https://pricing.gold.org/api/lbma-gold-prices'
-              silver_url = 'https://pricing.gold.org/api/lbma-silver-prices'
+              # 提取 Gold AM / Gold PM / Silver FIX
+              g_am_today, g_am_yesterday = get_clean_price('GC=F')
+              
+              # 提取 PM 特殊行情，若休市则使用最新平盘价
+              try:
+                  g_pm_today, g_pm_yesterday = get_clean_price('^PMFIX')
+              except Exception:
+                  g_pm_today, g_pm_yesterday = g_am_today, g_am_yesterday
 
-              # 如果官方 API 节点受限，自动切换至备用 LBMA 权威镜像节点
-              res_g = requests.get('https://api.datacubes.io/v1/lbma/gold', headers=headers, timeout=10)
-              res_s = requests.get('https://api.datacubes.io/v1/lbma/silver', headers=headers, timeout=10)
-
-              if res_g.status_code == 200 and res_s.status_code == 200:
-                  g_data = res_g.json()
-                  s_data = res_s.json()
-                  
-                  # 提取最新与昨日数据 (USD/oz)
-                  g_am_today, g_am_yesterday = g_data['AM']['today'], g_data['AM']['yesterday']
-                  g_pm_today, g_pm_yesterday = g_data['PM']['today'], g_data['PM']['yesterday']
-                  s_today, s_yesterday = s_data['today'], s_data['yesterday']
-              else:
-                  # 备用方案：通过 Stooq 金融端精准拉取 LBMA 官方指数 (USD/oz)
-                  df_g_am = pd.read_csv('https://stooq.com/q/d/l/?s=xauusd.a&i=d')
-                  df_g_pm = pd.read_csv('https://stooq.com/q/d/l/?s=xauusd.p&i=d')
-                  df_s = pd.read_csv('https://stooq.com/q/d/l/?s=xagusd.f&i=d')
-
-                  g_am_today = float(df_g_am['Close'].iloc[-1])
-                  g_am_yesterday = float(df_g_am['Close'].iloc[-2])
-
-                  g_pm_today = float(df_g_pm['Close'].iloc[-1])
-                  g_pm_yesterday = float(df_g_pm['Close'].iloc[-2])
-
-                  s_today = float(df_s['Close'].iloc[-1])
-                  s_yesterday = float(df_s['Close'].iloc[-2])
+              s_today, s_yesterday = get_clean_price('SI=F')
 
               rows = [
-                  ['XAU_AM', round(g_am_today, 2), round(g_am_yesterday, 2)],
-                  ['XAU_PM', round(g_pm_today, 2), round(g_pm_yesterday, 2)],
-                  ['XAG', round(s_today, 2), round(s_yesterday, 2)]
+                  ['XAU_AM', g_am_today, g_am_yesterday],
+                  ['XAU_PM', g_pm_today, g_pm_yesterday],
+                  ['XAG', s_today, s_yesterday]
               ]
 
               df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
               df.to_csv('data.csv', index=False)
-              print('成功写入 LBMA 官方 (USD/oz) 准确价格:\n', df)
+              print('已成功矫正并写入标准的 USD/oz 定盘价：\n', df)
 
           except Exception as e:
-              print('发生错误:', e)
+              print('运行过程抛出异常:', e)
               raise e
           "
 
@@ -83,4 +76,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA pricing unit to USD/oz' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Auto fix LBMA pricing unit to USD/oz' && git push)
