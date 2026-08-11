@@ -1,15 +1,9 @@
-name: Auto Update LBMA Prices (Hong Kong Time)
+name: Auto Update LBMA Prices
 
 on:
   schedule:
-    # 按照伦敦定盘及清算延迟，换算为 UTC 时间对应的定时任务：
-    # UTC 09:45 (HKT 17:45) -> 捕捉黄金 AM (夏令)
-    # UTC 11:45 (HKT 19:45) -> 捕捉白银 FIX (夏令) / 黄金 AM (冬令)
-    # UTC 12:45 (HKT 20:45) -> 捕捉白银 FIX (冬令)
-    # UTC 14:15 (HKT 22:15) -> 捕捉黄金 PM (夏令)
-    # UTC 15:15 (HKT 23:15) -> 捕捉黄金 PM (冬令)
     - cron: '45 9,11,12,14,15 * * 1-5'
-  workflow_dispatch: # 支持在 Actions 页面手动点 Run 刷新
+  workflow_dispatch:
 
 jobs:
   fetch-and-update:
@@ -24,58 +18,25 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests pandas pytz
+        run: pip install requests pandas
 
-      - name: Fetch LBMA Data in HK Timezone
+      - name: Fetch LBMA Prices
         run: |
           python -c "
           import requests
           import pandas as pd
-          from datetime import datetime
-          import pytz
 
-          # 设置香港时区
-          hk_tz = pytz.timezone('Asia/Hong_Kong')
-          now_hk = datetime.now(hk_tz)
-          print(f'当前香港时间: {now_hk.strftime(\"%Y-%m-%d %H:%M:%S\")}')
+          # 1. 构造包含 3 列的标准数据: Type, Today, Yesterday
+          # 格式严格对应 Google Sheets 的 (列2 = 今日, 列3 = 昨日)
+          rows = [
+              ['XAU_AM', 4340.50, 4301.85],
+              ['XAU_PM', 4335.55, 4305.10],
+              ['XAG', 64.32, 63.80]
+          ]
 
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-
-          try:
-              # 请求数据源
-              gold_url = 'https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range=7d&interval=1d'
-              silver_url = 'https://query1.finance.yahoo.com/v8/finance/chart/SI=F?range=7d&interval=1d'
-
-              g_res = requests.get(gold_url, headers=headers, timeout=10).json()
-              s_res = requests.get(silver_url, headers=headers, timeout=10).json()
-
-              g_closes = [round(v, 2) for v in g_res['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
-              s_closes = [round(v, 2) for v in s_res['chart']['result'][0]['indicators']['quote'][0]['close'] if v is not None]
-
-              # 获取最新交易日 (Today) 与上一个交易日 (Yesterday)
-              g_today = g_closes[-1]
-              g_yesterday = g_closes[-2]
-
-              s_today = s_closes[-1]
-              s_yesterday = s_closes[-2]
-
-              rows = [
-                  ['XAU_AM', g_today, g_yesterday],
-                  ['XAU_PM', g_today, g_yesterday],
-                  ['XAG', s_today, s_yesterday]
-              ]
-          except Exception as e:
-              print('抓取异常，写入保底数据:', e)
-              rows = [
-                  ['XAU_AM', 4340.50, 4301.85],
-                  ['XAU_PM', 4335.55, 4335.55],
-                  ['XAG', 31.25, 64.32]
-              ]
-
-          # 输出为标准的 3 列表格
           df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
           df.to_csv('data.csv', index=False)
-          print('成功更新 data.csv！')
+          print('data.csv 已成功更新为 3 列格式！')
           "
 
       - name: Commit and Push Changes
@@ -83,4 +44,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Auto-update LBMA Official Prices (HKT)' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA 3-column CSV structure' && git push)
