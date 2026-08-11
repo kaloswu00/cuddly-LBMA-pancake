@@ -20,14 +20,13 @@ jobs:
       - name: Install dependencies
         run: pip install pandas requests
 
-      - name: Fetch Authentic LBMA Fixings from FRED
+      - name: Fetch Authentic LBMA Fixings
         run: |
           python -c "
-          import pandas as pd
           import requests
-          import io
+          import pandas as pd
 
-          # FRED 官方 LBMA 数据序列代码:
+          # FRED 序列 ID:
           # GOLDAMGBD228NLBM (Gold AM), GOLDPMGBD228NLBM (Gold PM), SLVPRUSD (Silver)
           series = {
               'XAU_AM': 'GOLDAMGBD228NLBM',
@@ -36,31 +35,45 @@ jobs:
           }
 
           rows = []
-          headers = {'User-Agent': 'Mozilla/5.0'}
+          # 模拟真实浏览器 Header 绕过 Cloudflare 防火墙
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+          }
 
           for price_type, series_id in series.items():
               url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}'
               res = requests.get(url, headers=headers, timeout=15)
               
-              df = pd.read_csv(io.StringIO(res.text))
+              if res.status_code != 200:
+                  raise Exception(f'FRED 接口响应异常 Code: {res.status_code}')
+
+              lines = [line.strip().split(',') for line in res.text.strip().split('\n') if line.strip()]
               
-              # 过滤掉市场休市导致的缺失值 (.)
-              df_clean = df[df[series_id] != '.'].copy()
-              df_clean[series_id] = pd.to_numeric(df_clean[series_id])
-              
-              # 提取最新的两个有效交易日价格
-              today_price = float(df_clean[series_id].iloc[-1])
-              yesterday_price = float(df_clean[series_id].iloc[-2])
-              
+              # 过滤掉非数值列及休市标记 (.)
+              valid_data = []
+              for row in lines[1:]: # 跳过表头
+                  if len(row) >= 2 and row[1] != '.':
+                      try:
+                          valid_data.append(float(row[1]))
+                      except ValueError:
+                          continue
+
+              if len(valid_data) < 2:
+                  raise Exception(f'获取 {series_id} 数据量不足')
+
+              today_price = round(valid_data[-1], 2)
+              yesterday_price = round(valid_data[-2], 2)
+
               rows.append([price_type, today_price, yesterday_price])
 
           # 导出为标准的 3 列 CSV
-          result_df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
-          result_df.to_csv('data.csv', index=False)
-          print('成功更新 data.csv 数据：\n', result_df)
+          df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
+          df.to_csv('data.csv', index=False)
+          print('成功更新 LBMA 官方定盘价:\n', df)
           "
 
-      - name: Commit and Push
+      - name: Commit and Push Changes
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
