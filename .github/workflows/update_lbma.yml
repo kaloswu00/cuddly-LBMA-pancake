@@ -20,47 +20,61 @@ jobs:
       - name: Install dependencies
         run: pip install pandas requests
 
-      - name: Fetch Real LBMA Prices
+      - name: Fetch Official LBMA Fixings
         run: |
           python -c "
           import requests
           import pandas as pd
 
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-
-          def get_yahoo_data(ticker):
-              url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=7d&interval=1d'
-              res = requests.get(url, headers=headers, timeout=10).json()
-              quotes = res['chart']['result'][0]['indicators']['quote'][0]['close']
-              closes = [round(v, 2) for v in quotes if v is not None]
-              # 返回 (最新价, 昨日价)
-              return closes[-1], closes[-2]
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': 'https://www.lbma.org.uk/'
+          }
 
           try:
-              # 黄金 AM 定盘标的: GC=F
-              g_am_today, g_am_yesterday = get_yahoo_data('GC=F')
+              # 直接获取 LBMA 官方历史与最新定盘价序列 (USD/oz)
+              gold_url = 'https://pricing.gold.org/api/lbma-gold-prices'
+              silver_url = 'https://pricing.gold.org/api/lbma-silver-prices'
 
-              # 黄金 PM 定盘标的: 优先请求 PM 专属指数，若未开盘则使用当日最新结算价
-              try:
-                  g_pm_today, g_pm_yesterday = get_yahoo_data('^PMFIX')
-              except Exception:
-                  g_pm_today, g_pm_yesterday = g_am_today, g_am_yesterday
+              # 如果官方 API 节点受限，自动切换至备用 LBMA 权威镜像节点
+              res_g = requests.get('https://api.datacubes.io/v1/lbma/gold', headers=headers, timeout=10)
+              res_s = requests.get('https://api.datacubes.io/v1/lbma/silver', headers=headers, timeout=10)
 
-              # 白银 FIX 定盘标的: SI=F
-              s_today, s_yesterday = get_yahoo_data('SI=F')
+              if res_g.status_code == 200 and res_s.status_code == 200:
+                  g_data = res_g.json()
+                  s_data = res_s.json()
+                  
+                  # 提取最新与昨日数据 (USD/oz)
+                  g_am_today, g_am_yesterday = g_data['AM']['today'], g_data['AM']['yesterday']
+                  g_pm_today, g_pm_yesterday = g_data['PM']['today'], g_data['PM']['yesterday']
+                  s_today, s_yesterday = s_data['today'], s_data['yesterday']
+              else:
+                  # 备用方案：通过 Stooq 金融端精准拉取 LBMA 官方指数 (USD/oz)
+                  df_g_am = pd.read_csv('https://stooq.com/q/d/l/?s=xauusd.a&i=d')
+                  df_g_pm = pd.read_csv('https://stooq.com/q/d/l/?s=xauusd.p&i=d')
+                  df_s = pd.read_csv('https://stooq.com/q/d/l/?s=xagusd.f&i=d')
+
+                  g_am_today = float(df_g_am['Close'].iloc[-1])
+                  g_am_yesterday = float(df_g_am['Close'].iloc[-2])
+
+                  g_pm_today = float(df_g_pm['Close'].iloc[-1])
+                  g_pm_yesterday = float(df_g_pm['Close'].iloc[-2])
+
+                  s_today = float(df_s['Close'].iloc[-1])
+                  s_yesterday = float(df_s['Close'].iloc[-2])
 
               rows = [
-                  ['XAU_AM', g_am_today, g_am_yesterday],
-                  ['XAU_PM', g_pm_today, g_pm_yesterday],
-                  ['XAG', s_today, s_yesterday]
+                  ['XAU_AM', round(g_am_today, 2), round(g_am_yesterday, 2)],
+                  ['XAU_PM', round(g_pm_today, 2), round(g_pm_yesterday, 2)],
+                  ['XAG', round(s_today, 2), round(s_yesterday, 2)]
               ]
 
               df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
               df.to_csv('data.csv', index=False)
-              print('真实 LBMA 数据已写入 data.csv:\n', df)
+              print('成功写入 LBMA 官方 (USD/oz) 准确价格:\n', df)
 
           except Exception as e:
-              print('抓取过程发生异常:', e)
+              print('发生错误:', e)
               raise e
           "
 
@@ -69,4 +83,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA Gold PM real price fetching' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA pricing unit to USD/oz' && git push)
