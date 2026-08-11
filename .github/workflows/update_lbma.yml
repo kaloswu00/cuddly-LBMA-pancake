@@ -2,7 +2,8 @@ name: Auto Update LBMA Prices
 
 on:
   schedule:
-    - cron: '45 9,11,12,14,15 * * 1-5'
+    # 覆盖香港时间傍晚至深夜的各个定盘时段 (UTC 09:30, 11:30, 14:30, 15:30)
+    - cron: '30 9,11,14,15 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -18,30 +19,63 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests pandas
+        run: pip install requests pandas pytz
 
-      - name: Fetch LBMA Prices
+      - name: Fetch Authentic LBMA Fixings
         run: |
           python -c "
           import requests
           import pandas as pd
+          from datetime import datetime
+          import pytz
 
-          # 1. 构造包含 3 列的标准数据: Type, Today, Yesterday
-          # 格式严格对应 Google Sheets 的 (列2 = 今日, 列3 = 昨日)
-          rows = [
-              ['XAU_AM', 4340.50, 4301.85],
-              ['XAU_PM', 4335.55, 4305.10],
-              ['XAG', 64.32, 63.80]
-          ]
+          hk_tz = pytz.timezone('Asia/Hong_Kong')
+          print('开始更新 LBMA 数据，香港时间:', datetime.now(hk_tz).strftime('%Y-%m-%d %H:%M:%S'))
 
-          df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
-          df.to_csv('data.csv', index=False)
-          print('data.csv 已成功更新为 3 列格式！')
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+          try:
+              # 使用专门处理 LBMA 历史序列的公开 API 节点
+              gold_url = 'https://pkgstore.datahub.io/core/gold-prices/daily_json/data/pkgstore/json-process/data.json'
+              silver_url = 'https://pkgstore.datahub.io/core/silver-prices/daily_json/data/pkgstore/json-process/data.json'
+
+              g_data = requests.get(gold_url, headers=headers, timeout=15).json()
+              s_data = requests.get(silver_url, headers=headers, timeout=15).json()
+
+              # 过滤出有效价格列表
+              g_prices = [item for item in g_data if 'Price' in item and item['Price'] is not None]
+              s_prices = [item for item in s_data if 'Price' in item and item['Price'] is not None]
+
+              # 动态按倒数第 1 个 (Latest/Yesterday) 与倒数第 2 个 (Previous) 匹配
+              # 确保黄金 AM, PM 与白银独立赋值，避免混用
+              g_am_today = g_prices[-1]['Price']
+              g_am_yesterday = g_prices[-2]['Price']
+
+              # 如果接口包含 AM/PM 拆分，按键值提取；若为单点定盘，保留标准清算位
+              g_pm_today = g_prices[-1].get('PM', g_prices[-1]['Price'])
+              g_pm_yesterday = g_prices[-2].get('PM', g_prices[-2]['Price'])
+
+              s_today = s_prices[-1]['Price']
+              s_yesterday = s_prices[-2]['Price']
+
+              rows = [
+                  ['XAU_AM', g_am_today, g_am_yesterday],
+                  ['XAU_PM', g_pm_today, g_pm_yesterday],
+                  ['XAG', s_today, s_yesterday]
+              ]
+
+              df = pd.DataFrame(rows, columns=['Type', 'Today', 'Yesterday'])
+              df.to_csv('data.csv', index=False)
+              print('成功更新 data.csv 格式：\n', df)
+
+          except Exception as e:
+              print('抓取失败，引发异常:', e)
+              raise e # 显式抛出错误，确保 Actions 失败报错，避免写入伪造数据
           "
 
-      - name: Commit and Push Changes
+      - name: Commit and Push
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m 'Fix LBMA 3-column CSV structure' && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m 'Update LBMA prices dynamically' && git push)
